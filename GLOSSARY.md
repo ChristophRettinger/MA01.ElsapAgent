@@ -41,3 +41,11 @@ The ordered and open hours of all bookable time sheets as read in one run.
 
 **Change**:
 A difference between two consecutive snapshots: a time sheet appeared, disappeared, or its ordered or open hours differ.
+
+**Known change**:
+A manually recorded event, such as a booking by a person, that is expected to cause a change in the hours of a time sheet. Known changes are kept separately from the snapshot history.
+_Avoid_: Comment, annotation
+
+**Explained**:
+A change is explained when known changes for the same time sheet, dated shortly before the run that detected it, add up to its hours difference. It is partially explained when they add up to less or more, and unexplained when none apply.
+_Avoid_: Matched, verified

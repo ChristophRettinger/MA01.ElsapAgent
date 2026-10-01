@@ -48,6 +48,25 @@ pwsh ./Show-ElsapChanges.ps1 Orchestra -PassThru | Export-Csv changes.csv
 
 The script only reads `data/elsap-hours.csv` and never contacts ELSAP. It replays the history and lists every difference between consecutive runs. The first run ever is the baseline and is not reported as a change. The project filter is a case-insensitive regular expression.
 
+## Explaining changes with known changes
+
+Keep a CSV of expected events, for example your own bookings, in `data/known-changes.csv`. `Show-ElsapChanges.ps1` picks it up automatically, or you pass another file with `-KnownChanges <path>`. Changes that the file does not account for are shown in red, so the unexpected ones stand out.
+
+```
+Date;Project;Role;Field;Hours;Note
+2026-09-30;Orchestra;Architekt;Open;-115.25;Booking by Chris
+2026-10-01;Azure;;Ordered;200;Obligo splitting
+```
+
+The file is semicolon-separated UTF-8 with ISO dates and a decimal point. `Project` and `Role` are case-insensitive regular expressions with the same meaning as the script parameters, and blank means any. `Field` is `Open` (default) or `Ordered`. `Hours` is the signed difference, so a booking is negative.
+
+A known change belongs to a change when project, role, field and sign match, and its date is at most `-LookbackDays` (default 7) before the run that detected the change, but not after it. Several known changes can add up to one change, and each is used for at most one change. The result per change is `Explained` (the sum equals the difference), `partial` (it differs, the remainder is shown) or `?` (nothing matches). New and removed time sheets have no difference and are always `?`. `-Unexplained` lists only the changes that are not fully explained.
+
+```powershell
+pwsh ./Show-ElsapChanges.ps1 -Unexplained
+pwsh ./Show-ElsapChanges.ps1 -KnownChanges C:\temp\bookings.csv -LookbackDays 14
+```
+
 ## Output
 
 Everything is written to `data/` (git-ignored):

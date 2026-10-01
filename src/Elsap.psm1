@@ -298,15 +298,77 @@ function Compare-ElsapSnapshot {
     }
 }
 
+function Import-ElsapKnownChange {
+    <# Reads the manually kept known-changes CSV (; delimited, ISO dates, decimal point). #>
+    param([Parameter(Mandatory)][string]$Path)
+    $inv = [cultureinfo]::InvariantCulture
+    $rows = @(Import-Csv -Path $Path -Delimiter ';')
+    $header = (Get-Content -Path $Path -TotalCount 1) -replace '^﻿' -replace '"'
+    $missing = 'Date', 'Project', 'Role', 'Field', 'Hours', 'Note' | Where-Object { ($header -split ';') -notcontains $_ }
+    if ($missing) { throw "${Path}: header row must be 'Date;Project;Role;Field;Hours;Note' (missing: $($missing -join ', '))." }
+    $line = 1
+    foreach ($r in $rows) {
+        $line++
+        $field = if ($r.Field) { $r.Field.Trim() } else { 'Open' }
+        if ($field -notin 'Open', 'Ordered') { throw "${Path} line ${line}: Field must be 'Open' or 'Ordered', got '$field'." }
+        $date = [datetime]::MinValue
+        if (-not [datetime]::TryParseExact($r.Date, [string[]]('yyyy-MM-dd', 'yyyy-MM-ddTHH:mm:ss', 'yyyy-MM-dd HH:mm:ss', 'yyyy-MM-ddTHH:mm'), $inv, [Globalization.DateTimeStyles]::None, [ref]$date)) { throw "${Path} line ${line}: Date must be yyyy-MM-dd, got '$($r.Date)'." }
+        $date = $date.Date
+        $hours = [decimal]0
+        if (-not [decimal]::TryParse($r.Hours, 'Number', $inv, [ref]$hours)) { throw "${Path} line ${line}: Hours must be a number with decimal point, got '$($r.Hours)'." }
+        [pscustomobject]@{ Date = $date; Project = $r.Project; Role = $r.Role; Field = $field; Hours = $hours; Note = $r.Note }
+    }
+}
+
+function Set-ElsapChangeExplanation {
+    <#
+    Adds Status (Explained/Partial/Unexplained), Note and Remaining to each change.
+    A known change is a candidate for a change when project, role and field match, its date is at most
+    LookbackDays before the run that detected the change (and not after it) and its sign matches the delta.
+    Changes are processed chronologically; every known change is used for at most one change.
+    #>
+    param([object[]]$Change, [object[]]$KnownChange, [int]$LookbackDays = 7)
+    $used = [System.Collections.Generic.HashSet[object]]::new()
+    $fields = [ordered]@{ Open = 'OpenDelta'; Ordered = 'OrderedDelta' }
+    foreach ($c in $Change | Sort-Object Timestamp) {
+        $notes = @(); $remaining = @(); $states = @()
+        foreach ($field in $fields.Keys) {
+            $delta = $c.($fields[$field])
+            if (-not $delta) { continue }
+            $from = $c.Timestamp.Date.AddDays(-$LookbackDays); $to = $c.Timestamp.Date
+            $hits = @($KnownChange | Where-Object {
+                    $_.Field -eq $field -and -not $used.Contains($_) -and $_.Date -ge $from -and $_.Date -le $to -and
+                    [math]::Sign($_.Hours) -eq [math]::Sign($delta) -and
+                    (-not $_.Project -or $c.Project -match $_.Project) -and (-not $_.Role -or $c.Role -match $_.Role)
+                } | Sort-Object Date)
+            $sum = [decimal]0
+            foreach ($h in $hits) { [void]$used.Add($h); $sum += $h.Hours; if ($h.Note) { $notes += $h.Note } }
+            if ($sum -eq $delta) { $states += 'Explained' }
+            else {
+                $states += if ($hits) { 'Partial' } else { 'Unexplained' }
+                $remaining += '{0} {1}' -f $field, ($delta - $sum).ToString('+0.00;-0.00', [cultureinfo]::InvariantCulture)
+            }
+        }
+        $status = if (-not $states) { 'Unexplained' }
+                  elseif ($states.Where({ $_ -ne 'Explained' }).Count -eq 0) { 'Explained' }
+                  elseif ($states.Where({ $_ -ne 'Unexplained' }).Count -eq 0) { 'Unexplained' }
+                  else { 'Partial' }
+        $c | Add-Member -NotePropertyMembers @{ Status = $status; Note = ($notes -join '; '); Remaining = ($remaining -join ', ') } -Force
+    }
+}
+
 function Get-ElsapChangeHistory {
     <# Replays the history CSV and returns every change between consecutive snapshots since a given time. #>
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][datetime]$Since,
         [string]$Project,
-        [string]$Role
+        [string]$Role,
+        [object[]]$KnownChange,
+        [int]$LookbackDays = 7
     )
     if (-not (Test-Path $Path)) { return }
+    $all = [System.Collections.Generic.List[object]]::new()
     $rows = Import-Csv -Path $Path -Delimiter ';'
     $stamps = @($rows.Timestamp | Sort-Object -Unique)
     $previous = @()
@@ -317,10 +379,8 @@ function Get-ElsapChangeHistory {
         if ($previous.Count -gt 0 -or $stamp -ne $stamps[0]) {
             if ($time -ge $Since) {
                 foreach ($c in Compare-ElsapSnapshot -Previous $previous -Current $current) {
-                    if ($Project -and $c.Row.Project -notmatch $Project) { continue }
-                    if ($Role -and $c.Row.Role -notmatch $Role) { continue }
                     $old = $c.Old; $new = if ($c.Kind -eq 'removed') { $null } else { $c.Row }
-                    [pscustomobject]@{
+                    $all.Add([pscustomobject]@{
                         Timestamp    = $time
                         Kind         = $c.Kind
                         Key          = $c.Key
@@ -332,11 +392,18 @@ function Get-ElsapChangeHistory {
                         OpenNew      = if ($new) { $new.Open } else { $null }
                         OrderedDelta = if ($old -and $new) { $new.Ordered - $old.Ordered } else { $null }
                         OpenDelta    = if ($old -and $new) { $new.Open - $old.Open } else { $null }
-                    }
+                    })
                 }
             }
         }
         $previous = $current
+    }
+    # Explain before filtering so that a filter never changes which known change is used by which change.
+    if ($PSBoundParameters.ContainsKey('KnownChange')) {
+        Set-ElsapChangeExplanation -Change $all -KnownChange $KnownChange -LookbackDays $LookbackDays
+    }
+    $all | Where-Object {
+        (-not $Project -or $_.Project -match $Project) -and (-not $Role -or $_.Role -match $Role)
     }
 }
 
@@ -361,4 +428,4 @@ function Format-ElsapChange {
 
 Export-ModuleMember -Function Get-ElsapCredential, Set-ElsapCredential, Show-ElsapNotification,
     Connect-Elsap, Get-ElsapTimeSheet, Add-ElsapSnapshot, Get-ElsapSnapshot,
-    Compare-ElsapSnapshot, Get-ElsapChangeHistory, Format-ElsapChange
+    Compare-ElsapSnapshot, Get-ElsapChangeHistory, Format-ElsapChange, Import-ElsapKnownChange
