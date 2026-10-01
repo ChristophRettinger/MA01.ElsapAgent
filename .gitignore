@@ -1,0 +1,5 @@
+# Local data: history CSV, state, log (contains order data)
+data/
+# Scratch area for captures, HAR files, drafts (may contain tokens)
+scratch/
+*.har
