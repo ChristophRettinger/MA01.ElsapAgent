@@ -298,6 +298,48 @@ function Compare-ElsapSnapshot {
     }
 }
 
+function Get-ElsapChangeHistory {
+    <# Replays the history CSV and returns every change between consecutive snapshots since a given time. #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][datetime]$Since,
+        [string]$Project,
+        [string]$Role
+    )
+    if (-not (Test-Path $Path)) { return }
+    $rows = Import-Csv -Path $Path -Delimiter ';'
+    $stamps = @($rows.Timestamp | Sort-Object -Unique)
+    $previous = @()
+    foreach ($stamp in $stamps) {
+        $current = @(Get-ElsapSnapshot -Path $Path -Timestamp $stamp)
+        $time = [datetime]::ParseExact($stamp, 'yyyy-MM-dd HH:mm:ss', [cultureinfo]::InvariantCulture)
+        # The first snapshot is the baseline; changes are only reported from the second one on.
+        if ($previous.Count -gt 0 -or $stamp -ne $stamps[0]) {
+            if ($time -ge $Since) {
+                foreach ($c in Compare-ElsapSnapshot -Previous $previous -Current $current) {
+                    if ($Project -and $c.Row.Project -notmatch $Project) { continue }
+                    if ($Role -and $c.Row.Role -notmatch $Role) { continue }
+                    $old = $c.Old; $new = if ($c.Kind -eq 'removed') { $null } else { $c.Row }
+                    [pscustomobject]@{
+                        Timestamp    = $time
+                        Kind         = $c.Kind
+                        Key          = $c.Key
+                        Project      = $c.Row.Project
+                        Role         = $c.Row.Role
+                        OrderedOld   = if ($old) { $old.Ordered } else { $null }
+                        OrderedNew   = if ($new) { $new.Ordered } else { $null }
+                        OpenOld      = if ($old) { $old.Open } else { $null }
+                        OpenNew      = if ($new) { $new.Open } else { $null }
+                        OrderedDelta = if ($old -and $new) { $new.Ordered - $old.Ordered } else { $null }
+                        OpenDelta    = if ($old -and $new) { $new.Open - $old.Open } else { $null }
+                    }
+                }
+            }
+        }
+        $previous = $current
+    }
+}
+
 function Format-ElsapChange {
     param([Parameter(Mandatory)]$Change)
     $de = [cultureinfo]::GetCultureInfo('de-DE')
@@ -319,4 +361,4 @@ function Format-ElsapChange {
 
 Export-ModuleMember -Function Get-ElsapCredential, Set-ElsapCredential, Show-ElsapNotification,
     Connect-Elsap, Get-ElsapTimeSheet, Add-ElsapSnapshot, Get-ElsapSnapshot,
-    Compare-ElsapSnapshot, Format-ElsapChange
+    Compare-ElsapSnapshot, Get-ElsapChangeHistory, Format-ElsapChange

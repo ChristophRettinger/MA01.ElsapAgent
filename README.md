@@ -34,6 +34,20 @@ pwsh ./Get-ElsapHours.ps1          # normal run (skipped if already done today)
 pwsh ./Get-ElsapHours.ps1 -Force   # run now, ignore the once-per-day guard
 ```
 
+## Viewing the change history
+
+```powershell
+pwsh ./Show-ElsapChanges.ps1                      # all changes of the last 90 days
+pwsh ./Show-ElsapChanges.ps1 Orchestra            # only projects whose name matches the regex
+pwsh ./Show-ElsapChanges.ps1 -Role Architekt      # only services whose role text matches the regex
+pwsh ./Show-ElsapChanges.ps1 Orchestra -Role Developer   # both filters must match
+pwsh ./Show-ElsapChanges.ps1 'Azure|ChatGPT' -Days 30
+pwsh ./Show-ElsapChanges.ps1 -Since 2026-01-01
+pwsh ./Show-ElsapChanges.ps1 Orchestra -PassThru | Export-Csv changes.csv
+```
+
+The script only reads `data/elsap-hours.csv` and never contacts ELSAP. It replays the history and lists every difference between consecutive runs. The first run ever is the baseline and is not reported as a change. The project filter is a case-insensitive regular expression.
+
 ## Output
 
 Everything is written to `data/` (git-ignored):
@@ -66,6 +80,7 @@ Then one `GET` on `LeistungsblattSet` returns all time sheets as JSON. Bookable 
 ```
 Get-ElsapHours.ps1   daily run
 Setup-Elsap.ps1      one-time credential and schedule setup
+Show-ElsapChanges.ps1  lists changes from the history CSV
 src/Elsap.psm1       login, data access, credential store, notification, diffing
 data/                CSV, state, log (git-ignored)
 scratch/             captures and drafts (git-ignored)
